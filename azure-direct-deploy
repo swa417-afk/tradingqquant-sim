@@ -1,0 +1,335 @@
+#!/bin/bash
+
+# TradingQ Azure Direct Deployment
+
+# This script creates the project structure directly in Azure Cloud Shell
+
+set -e
+
+echo “╔════════════════════════════════════════════════════════════╗”
+echo “║   TradingQ Direct Azure Deployment (No Archive Needed)    ║”
+echo “╚════════════════════════════════════════════════════════════╝”
+echo “”
+
+GREEN=’\033[0;32m’
+BLUE=’\033[0;34m’
+YELLOW=’\033[1;33m’
+NC=’\033[0m’
+
+print_status() { echo -e “${BLUE}[INFO]${NC} $1”; }
+print_success() { echo -e “${GREEN}[✓]${NC} $1”; }
+
+# Configuration
+
+RG=${RG:-rg-tradingq-quant}
+LOC=${LOC:-eastus}
+ACR_NAME=acrtradingq$RANDOM
+ENV=cae-tradingq-quant
+
+print_status “This script will deploy TradingQ to Azure Container Apps”
+print_status “Configuration: Resource Group=$RG, Location=$LOC”
+echo “”
+read -p “Continue? (y/n) “ -n 1 -r
+echo
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+exit 1
+fi
+
+# Create project structure
+
+print_status “Creating project structure…”
+mkdir -p tradingq-deploy/{services/{api/app,worker/worker},apps/web-dashboard/app,infra}
+
+# Create API files
+
+print_status “Creating API service…”
+cat > tradingq-deploy/services/api/app/main.py << ‘EOF’
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import redis.asyncio as redis
+import json
+import os
+from typing import Set
+import asyncio
+
+app = FastAPI(title=“TradingQ API”, version=“1.0.0”)
+
+origins = json.loads(os.getenv(“API_CORS_ORIGINS”, ‘[”*”]’))
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=[”*”], allow_headers=[”*”])
+
+REDIS_URL = os.getenv(“REDIS_URL”, “redis://localhost:6379/0”)
+WS_BROADCAST_CHANNEL = os.getenv(“WS_BROADCAST_CHANNEL”, “ticks”)
+active_connections: Set[WebSocket] = set()
+redis_client = None
+
+async def get_redis():
+global redis_client
+if redis_client is None:
+redis_client = await redis.from_url(REDIS_URL, decode_responses=True)
+return redis_client
+
+@app.on_event(“startup”)
+async def startup_event():
+await get_redis()
+print(f”✅ Connected to Redis at {REDIS_URL}”)
+
+@app.on_event(“shutdown”)
+async def shutdown_event():
+global redis_client
+if redis_client:
+await redis_client.close()
+
+@app.get(”/”)
+async def root():
+return {“service”: “TradingQ API”, “version”: “1.0.0”, “status”: “running”}
+
+@app.get(”/health”)
+async def health_check():
+try:
+r = await get_redis()
+await r.ping()
+return {“status”: “healthy”, “redis”: “connected”, “websocket_connections”: len(active_connections)}
+except Exception as e:
+return {“status”: “unhealthy”, “redis”: “disconnected”, “error”: str(e)}
+
+async def broadcast_from_redis():
+r = await get_redis()
+pubsub = r.pubsub()
+await pubsub.subscribe(WS_BROADCAST_CHANNEL)
+print(f”🎧 Listening to Redis channel: {WS_BROADCAST_CHANNEL}”)
+try:
+async for message in pubsub.listen():
+if message[“type”] == “message”:
+data = message[“data”]
+disconnected = set()
+for connection in active_connections:
+try:
+await connection.send_text(data)
+except:
+disconnected.add(connection)
+active_connections.difference_update(disconnected)
+except Exception as e:
+print(f”❌ Redis error: {e}”)
+finally:
+await pubsub.unsubscribe(WS_BROADCAST_CHANNEL)
+
+@app.websocket(”/ws”)
+async def websocket_endpoint(websocket: WebSocket):
+await websocket.accept()
+active_connections.add(websocket)
+print(f”🔌 WebSocket connected. Total: {len(active_connections)}”)
+if len(active_connections) == 1:
+asyncio.create_task(broadcast_from_redis())
+try:
+while True:
+data = await websocket.receive_text()
+await websocket.send_json({“type”: “ack”, “message”: “Received”, “data”: data})
+except WebSocketDisconnect:
+active_connections.remove(websocket)
+print(f”🔌 WebSocket disconnected. Total: {len(active_connections)}”)
+except Exception as e:
+if websocket in active_connections:
+active_connections.remove(websocket)
+
+@app.get(”/api/stats”)
+async def get_stats():
+return {“active_connections”: len(active_connections), “broadcast_channel”: WS_BROADCAST_CHANNEL}
+EOF
+
+cat > tradingq-deploy/services/api/requirements.txt << ‘EOF’
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+redis==5.0.1
+python-dotenv==1.0.0
+websockets==12.0
+pydantic==2.5.3
+EOF
+
+cat > tradingq-deploy/services/api/Dockerfile << ‘EOF’
+FROM python:3.11-slim
+WORKDIR /app
+COPY services/api/requirements.txt .
+RUN pip install –no-cache-dir -r requirements.txt
+COPY services/api/app ./app
+EXPOSE 8000
+CMD [“uvicorn”, “app.main:app”, “–host”, “0.0.0.0”, “–port”, “8000”]
+EOF
+
+# Create Worker files
+
+print_status “Creating Worker service…”
+cat > tradingq-deploy/services/worker/worker/main.py << ‘EOF’
+import asyncio
+import ccxt.async_support as ccxt
+import redis.asyncio as redis
+import json
+import os
+from datetime import datetime
+
+REDIS_URL = os.getenv(“REDIS_URL”, “redis://localhost:6379/0”)
+WS_BROADCAST_CHANNEL = os.getenv(“WS_BROADCAST_CHANNEL”, “ticks”)
+EXCHANGE_ID = os.getenv(“EXCHANGE_ID”, “coinbase”)
+SYMBOL = os.getenv(“SYMBOL”, “BTC/USD”)
+TIMEFRAME = os.getenv(“TIMEFRAME”, “1m”)
+SMA_PERIOD = int(os.getenv(“SMA_PERIOD”, “20”))
+
+price_history = []
+redis_client = None
+exchange = None
+
+async def get_redis():
+global redis_client
+if redis_client is None:
+redis_client = await redis.from_url(REDIS_URL, decode_responses=True)
+return redis_client
+
+async def get_exchange():
+global exchange
+if exchange is None:
+exchange_class = getattr(ccxt, EXCHANGE_ID)
+exchange = exchange_class({‘enableRateLimit’: True})
+return exchange
+
+def calculate_sma(prices, period):
+if len(prices) < period:
+return None
+return sum(prices[-period:]) / period
+
+async def main_loop():
+global price_history
+print(f”🚀 TradingQ Worker Started”)
+print(f”📡 Exchange: {EXCHANGE_ID} | Symbol: {SYMBOL} | Timeframe: {TIMEFRAME}”)
+
+```
+timeframe_seconds = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600}
+interval = timeframe_seconds.get(TIMEFRAME, 60)
+
+try:
+    while True:
+        try:
+            ex = await get_exchange()
+            ticker = await ex.fetch_ticker(SYMBOL)
+            price = ticker['last']
+            price_history.append(price)
+            if len(price_history) > 100:
+                price_history = price_history[-100:]
+            
+            sma = calculate_sma(price_history, SMA_PERIOD)
+            signal = None
+            if sma:
+                signal = "BUY" if price > sma else "SELL" if price < sma else "HOLD"
+            
+            tick_data = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "exchange": EXCHANGE_ID,
+                "symbol": SYMBOL,
+                "price": price,
+                "bid": ticker.get('bid'),
+                "ask": ticker.get('ask'),
+                "volume": ticker.get('volume'),
+                "sma": sma,
+                "signal": signal,
+                "history_size": len(price_history)
+            }
+            
+            r = await get_redis()
+            await r.publish(WS_BROADCAST_CHANNEL, json.dumps(tick_data))
+            print(f"📊 {SYMBOL} @ ${price:.2f} | SMA: {sma:.2f if sma else 'N/A'} | {signal}")
+        except Exception as e:
+            print(f"❌ Error: {e}")
+        
+        await asyncio.sleep(interval)
+except KeyboardInterrupt:
+    print("\n👋 Shutting down...")
+finally:
+    if exchange:
+        await exchange.close()
+    if redis_client:
+        await redis_client.close()
+```
+
+if **name** == “**main**”:
+asyncio.run(main_loop())
+EOF
+
+cat > tradingq-deploy/services/worker/requirements.txt << ‘EOF’
+ccxt==4.2.25
+redis==5.0.1
+python-dotenv==1.0.0
+EOF
+
+cat > tradingq-deploy/services/worker/Dockerfile << ‘EOF’
+FROM python:3.11-slim
+WORKDIR /app
+COPY services/worker/requirements.txt .
+RUN pip install –no-cache-dir -r requirements.txt
+COPY services/worker/worker ./worker
+CMD [“python”, “-m”, “worker.main”]
+EOF
+
+print_success “Project structure created!”
+
+# Deploy to Azure
+
+print_status “Starting Azure deployment…”
+
+print_status “Creating Resource Group…”
+az group create -n $RG -l $LOC
+
+print_status “Creating Container Registry…”
+az acr create -n $ACR_NAME -g $RG –sku Basic –admin-enabled true
+az acr login -n $ACR_NAME
+ACR_LOGIN=$(az acr show -n $ACR_NAME -g $RG –query loginServer -o tsv)
+
+print_status “Building images… (this takes 5-10 minutes)”
+cd tradingq-deploy
+
+az acr build -r $ACR_NAME -t tradingq-api:1.0 -f services/api/Dockerfile . &
+PID_API=$!
+az acr build -r $ACR_NAME -t tradingq-worker:1.0 -f services/worker/Dockerfile . &
+PID_WORKER=$!
+
+wait $PID_API
+wait $PID_WORKER
+
+print_success “Images built!”
+
+print_status “Creating Container Apps Environment…”
+az extension add –name containerapp –upgrade 2>/dev/null || true
+az containerapp env create -n $ENV -g $RG -l $LOC
+
+print_status “Deploying Redis…”
+az containerapp create -n redis -g $RG –environment $ENV   
+–image redis:7-alpine –ingress internal –target-port 6379   
+–cpu 0.5 –memory 1.0Gi
+
+print_status “Deploying API…”
+az containerapp create -n api -g $RG –environment $ENV   
+–image $ACR_LOGIN/tradingq-api:1.0 –registry-server $ACR_LOGIN   
+–ingress external –target-port 8000 –cpu 0.5 –memory 1.0Gi   
+–env-vars REDIS_URL=redis://redis:6379/0 WS_BROADCAST_CHANNEL=ticks API_CORS_ORIGINS=’[”*”]’
+
+API_FQDN=$(az containerapp show -n api -g $RG –query properties.configuration.ingress.fqdn -o tsv)
+
+print_status “Deploying Worker…”
+az containerapp create -n worker -g $RG –environment $ENV   
+–image $ACR_LOGIN/tradingq-worker:1.0 –registry-server $ACR_LOGIN   
+–cpu 0.5 –memory 1.0Gi   
+–env-vars REDIS_URL=redis://redis:6379/0 WS_BROADCAST_CHANNEL=ticks   
+EXCHANGE_ID=coinbase SYMBOL=BTC/USD TIMEFRAME=1m SMA_PERIOD=20
+
+echo “”
+echo “╔════════════════════════════════════════════════════════════╗”
+echo “║              Deployment Complete! 🎉                       ║”
+echo “╚════════════════════════════════════════════════════════════╝”
+echo “”
+echo “📊 Your TradingQ API is live at:”
+echo “   🔗 https://$API_FQDN”
+echo “   📊 Health: https://$API_FQDN/health”
+echo “   📖 Docs: https://$API_FQDN/docs”
+echo “   🔌 WebSocket: wss://$API_FQDN/ws”
+echo “”
+echo “📝 View Worker logs:”
+echo “   az containerapp logs show -n worker -g $RG –follow”
+echo “”
+print_success “All services deployed!”
