@@ -17,6 +17,8 @@
   "engines": {
     "node": ">=14"
   },
-  "dependencies": {},
+  "dependencies": {
+    "react-native": "latest"
+  },
   "devDependencies": {}
 }
