@@ -1,0 +1,40 @@
+run:
+  name: "backtest_demo"
+  out_dir: "runs"
+  seed: 42
+
+data:
+  csv_files: [] 
+  timestamp_col: "timestamp"
+  tz: "UTC"
+  base_timeframe: "1m"
+
+universe:
+  symbols: []
+
+execution:
+  commission_bps: 2.0
+  slippage_bps: 1.0
+
+risk:
+  max_gross_leverage: 2.0
+  max_position_pct: 0.25
+  max_daily_loss_pct: 0.05
+
+portfolio:
+  starting_cash: 100000.0
+
+strategy:
+  name: "trend"
+  timeframe: "5m"
+  params:
+    fast: 20
+    slow: 60
+
+ml:
+  enabled: false
+  config: "configs/pytorch.yaml"
+
+reports:
+  csv: true
+  html: true

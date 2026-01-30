@@ -1,0 +1,27 @@
+2026-01-29 23:24:18,877 | INFO | quant_sim | Starting paper mode: paper_ccxt -> runs/2026-01-29_232418_runid-055628f7
+2026-01-29 23:24:18,890 | INFO | quant_sim | Paper mode running. Press Ctrl+C to stop.
+2026-01-29 23:24:19,035 | WARNING | quant_sim | Quote failed for BTC/USDT: binance GET https://api.binance.com/api/v3/exchangeInfo 451  {
+  "code": 0,
+  "msg": "Service unavailable from a restricted location according to 'b. Eligibility' in https://www.binance.com/en/terms. Please contact customer service if you believe you received this message in error."
+}
+2026-01-29 23:24:19,109 | WARNING | quant_sim | Quote failed for ETH/USDT: binance GET https://api.binance.com/api/v3/exchangeInfo 451  {
+  "code": 0,
+  "msg": "Service unavailable from a restricted location according to 'b. Eligibility' in https://www.binance.com/en/terms. Please contact customer service if you believe you received this message in error."
+}
+2026-01-29 23:24:22,123 | WARNING | quant_sim | Quote failed for BTC/USDT: binance GET https://api.binance.com/api/v3/exchangeInfo 451  {
+  "code": 0,
+  "msg": "Service unavailable from a restricted location according to 'b. Eligibility' in https://www.binance.com/en/terms. Please contact customer service if you believe you received this message in error."
+}
+2026-01-29 23:24:22,323 | WARNING | quant_sim | Quote failed for ETH/USDT: binance GET https://api.binance.com/api/v3/exchangeInfo 451  {
+  "code": 0,
+  "msg": "Service unavailable from a restricted location according to 'b. Eligibility' in https://www.binance.com/en/terms. Please contact customer service if you believe you received this message in error."
+}
+2026-01-29 23:24:25,338 | WARNING | quant_sim | Quote failed for BTC/USDT: binance GET https://api.binance.com/api/v3/exchangeInfo 451  {
+  "code": 0,
+  "msg": "Service unavailable from a restricted location according to 'b. Eligibility' in https://www.binance.com/en/terms. Please contact customer service if you believe you received this message in error."
+}
+2026-01-29 23:24:25,538 | WARNING | quant_sim | Quote failed for ETH/USDT: binance GET https://api.binance.com/api/v3/exchangeInfo 451  {
+  "code": 0,
+  "msg": "Service unavailable from a restricted location according to 'b. Eligibility' in https://www.binance.com/en/terms. Please contact customer service if you believe you received this message in error."
+}
+2026-01-29 23:24:28,539 | WARNING | quant_sim | Disconnect guard tripped: stale quotes or too many failures. Stopping.
