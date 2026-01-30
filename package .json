@@ -1,0 +1,22 @@
+{
+  "name": "tradingqquant-sim",
+  "version": "0.1.0",
+  "description": "Simulation utilities for TradingQ Quant",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"No tests specified\" && exit 0",
+    "lint": "eslint ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/swa417-afk/tradingqquant-sim.git"
+  },
+  "author": "swa417-afk",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
