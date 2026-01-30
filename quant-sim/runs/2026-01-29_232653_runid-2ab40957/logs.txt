@@ -1,0 +1,2 @@
+2026-01-29 23:26:53,529 | INFO | quant_sim | Starting paper mode: paper_ccxt_coinbase -> runs/2026-01-29_232653_runid-2ab40957
+2026-01-29 23:26:53,533 | INFO | quant_sim | Paper mode running. Press Ctrl+C to stop.
