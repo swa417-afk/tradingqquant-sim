@@ -1,0 +1,21 @@
+features:
+  lookbacks: [5, 10, 20, 60]
+  use_returns: true
+  use_vol: true
+  normalize: true
+
+model:
+  kind: "mlp"
+  hidden: [64, 64]
+  dropout: 0.1
+  out: "p_up"
+
+training:
+  walk_forward: true
+  train_bars: 2000
+  test_bars: 500
+  epochs: 10
+  lr: 0.001
+  batch_size: 256
+  early_stop_patience: 2
+  seed: 42
