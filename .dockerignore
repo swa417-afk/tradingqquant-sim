@@ -2,3 +2,23 @@ node_modules
 .git
 TradingQuant-Sim.zip
 
+# Documentation files
+*.md
+
+# Git and Docker metadata
+.gitignore
+.dockerignore
+Dockerfile
+Dockerfile.*
+
+# Test and development-related files
+test/
+tests/
+__tests__/
+*.log
+*.tmp
+*.swp
+
+# Local environment/config (not for containers)
+.env
+.env.*
