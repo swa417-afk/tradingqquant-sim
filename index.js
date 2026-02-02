@@ -30,6 +30,11 @@ const server = http.createServer((req, res) => {
   res.end('Not Found');
 });
 
-server.listen(port, host, () => {
-  console.log(`[startup] server listening on http://${host}:${port}`);
-});
+server
+  .listen(port, host, () => {
+    console.log(`[startup] server listening on http://${host}:${port}`);
+  })
+  .on('error', (err) => {
+    console.error('[startup] failed to start server:', err);
+    process.exit(1);
+  });
