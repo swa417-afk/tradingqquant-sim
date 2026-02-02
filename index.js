@@ -37,7 +37,15 @@ server.on('error', (err) => {
 // Graceful shutdown handlers
 function gracefulShutdown(signal) {
   console.log(`[shutdown] received ${signal}, closing server...`);
+  
+  // Force exit after 10 seconds if graceful shutdown doesn't complete
+  const forceExitTimer = setTimeout(() => {
+    console.error('[shutdown] forced exit after timeout');
+    process.exit(1);
+  }, 10000);
+  
   server.close(() => {
+    clearTimeout(forceExitTimer);
     console.log('[shutdown] server closed, exiting');
     process.exit(0);
   });
