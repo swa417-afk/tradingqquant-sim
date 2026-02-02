@@ -32,7 +32,15 @@ server.listen(port, host, () => {
 // Graceful shutdown handlers for containerized environments
 function gracefulShutdown(signal) {
   console.log(`[shutdown] received ${signal}, closing server gracefully`);
+  
+  // Set a timeout to force exit if graceful shutdown takes too long
+  const shutdownTimeout = setTimeout(() => {
+    console.error('[shutdown] forced exit after timeout');
+    process.exit(1);
+  }, 10000);
+  
   server.close(() => {
+    clearTimeout(shutdownTimeout);
     console.log('[shutdown] server closed, exiting process');
     process.exit(0);
   });
