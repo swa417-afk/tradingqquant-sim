@@ -18,5 +18,6 @@
     "node": ">=14"
   },
   "dependencies": {},
-  "devDependencies": {}
+  "devDependencies": {},
+  "reactNativeRemovalNote": "The react-native dependency was removed because this package targets Node.js only and does not use React Native anywhere in the codebase."
 }
