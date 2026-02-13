@@ -1,8 +1,6 @@
-from fastapi import FastAPI
+def main():
+    print("Hello from repl-nix-workspace!")
 
-app = FastAPI(title="TradingQ")
 
-
-@app.get("/")
-def read_root():
-    return {"status": "ok"}
+if __name__ == "__main__":
+    main()
