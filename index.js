@@ -9,6 +9,10 @@ const { URL } = require('url');
 const port = Number.parseInt(process.env.PORT, 10) || 8080;
 const host = '0.0.0.0';
 
+const SHUTDOWN_TIMEOUT_MS = 30000;
+
+let isShuttingDown = false;
+
 const server = http.createServer((req, res) => {
   const { method, url } = req;
   const pathname = new URL(url, 'http://localhost').pathname;
@@ -40,3 +44,29 @@ server
     console.error('[startup] failed to start server:', err);
     process.exit(1);
   });
+
+process.on('SIGTERM', () => {
+  if (isShuttingDown) {
+    console.log('[shutdown] SIGTERM received again, shutdown already in progress');
+    return;
+  }
+  isShuttingDown = true;
+  
+  console.log('[shutdown] SIGTERM received, closing server gracefully');
+  
+  const shutdownTimeout = setTimeout(() => {
+    console.error('[shutdown] graceful shutdown timeout exceeded, forcing exit');
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+  shutdownTimeout.unref();
+  
+  server.close((err) => {
+    clearTimeout(shutdownTimeout);
+    if (err) {
+      console.error('[shutdown] error during server close:', err);
+      process.exit(1);
+    }
+    console.log('[shutdown] server closed, exiting process');
+    process.exit(0);
+  });
+});
