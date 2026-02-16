@@ -17,7 +17,14 @@ quant-sim backtest --config configs/backtest.yaml
 quant-sim paper --config configs/paper_coinbase.yaml
 Artifacts are written to runs/<timestamp>_runid-.../ (csv + report.html).
 
-## Web Service (Docker + Local)
+## Web Services
+
+This repository provides two web service options:
+
+1. **Node.js service** (`index.js`) - Lightweight HTTP server for container deployment with health checks. Best for cloud platforms (Azure Container Apps, AWS ECS, etc.).
+2. **Python FastAPI service** (`main.py`) - API service for Python-based integrations.
+
+### Node.js Service (Docker + Local)
 
 Local run:
 
