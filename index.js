@@ -41,7 +41,18 @@ server
 
 process.on('SIGTERM', () => {
   console.log('[shutdown] SIGTERM received, closing server gracefully');
-  server.close(() => {
+  
+  const shutdownTimeout = setTimeout(() => {
+    console.error('[shutdown] graceful shutdown timeout exceeded, forcing exit');
+    process.exit(1);
+  }, 30000);
+  
+  server.close((err) => {
+    clearTimeout(shutdownTimeout);
+    if (err) {
+      console.error('[shutdown] error during server close:', err);
+      process.exit(1);
+    }
     console.log('[shutdown] server closed, exiting process');
     process.exit(0);
   });
