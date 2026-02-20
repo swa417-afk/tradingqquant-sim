@@ -1,0 +1,41 @@
+run:
+  name: "paper_coinbase_demo"
+  out_dir: "runs"
+  seed: 42
+
+paper:
+  mode: "paper"
+  poll_seconds: 3
+  decision_timeframe: "1m"
+
+coinbase:
+  products: ["BTC-USD", "ETH-USD"]
+  use_public_api: true
+
+execution:
+  commission_bps: 2.0
+  slippage_bps: 1.0
+
+risk:
+  max_gross_leverage: 2.0
+  max_position_pct: 0.25
+  max_daily_loss_pct: 0.05
+  kill_switch: true
+
+portfolio:
+  starting_cash: 100000.0
+
+strategy:
+  name: "trend"
+  timeframe: "5m"
+  params:
+    fast: 20
+    slow: 60
+
+ml:
+  enabled: false
+  config: "configs/pytorch.yaml"
+
+reports:
+  csv: true
+  html: true

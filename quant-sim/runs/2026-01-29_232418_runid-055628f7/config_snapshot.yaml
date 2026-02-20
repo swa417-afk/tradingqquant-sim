@@ -1,0 +1,36 @@
+run:
+  name: "paper_ccxt"
+  out_dir: "runs"
+
+strategy:
+  name: "trend"
+  timeframe: "5m"
+  params:
+    fast: 20
+    slow: 60
+
+portfolio:
+  starting_cash: 100000
+
+risk:
+  max_gross_leverage: 2.0
+  max_position_pct: 0.25
+  max_daily_loss_pct: 0.05
+  kill_switch: true
+
+execution:
+  commission_bps: 2.0
+  slippage_bps: 1.0
+
+paper:
+  broker: "ccxt"
+  poll_seconds: 3
+  max_orders_per_min: 20
+  max_stale_seconds: 20
+  max_failures: 5
+
+ccxt:
+  exchange: "binance"
+  symbols:
+    - "BTC/USDT"
+    - "ETH/USDT"

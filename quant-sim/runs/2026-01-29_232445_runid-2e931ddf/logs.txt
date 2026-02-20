@@ -1,0 +1,2 @@
+2026-01-29 23:24:45,369 | INFO | quant_sim | Starting paper mode: paper_ccxt -> runs/2026-01-29_232445_runid-2e931ddf
+2026-01-29 23:24:45,374 | INFO | quant_sim | Paper mode running. Press Ctrl+C to stop.
