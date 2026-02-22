@@ -37,12 +37,25 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       # Fallback: use traditional AWS access key authentication
+      - name: Sanitize AWS access key secrets
+        if: vars.AWS_ROLE_TO_ASSUME == ''
+        env:
+          RAW_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          RAW_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          clean_key_id=$(printf '%s' "$RAW_KEY_ID" | tr -d '[:space:]')
+          clean_secret=$(printf '%s' "$RAW_SECRET" | tr -d '[:space:]')
+          echo "::add-mask::$clean_key_id"
+          echo "::add-mask::$clean_secret"
+          echo "CLEAN_AWS_ACCESS_KEY_ID=$clean_key_id" >> "$GITHUB_ENV"
+          echo "CLEAN_AWS_SECRET_ACCESS_KEY=$clean_secret" >> "$GITHUB_ENV"
+
       - name: Configure AWS credentials (Access Keys)
         if: vars.AWS_ROLE_TO_ASSUME == ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ env.CLEAN_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.CLEAN_AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
