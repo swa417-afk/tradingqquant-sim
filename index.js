@@ -2,6 +2,12 @@ const http = require('http');
 const { URL } = require('url');
 
 const port = Number.parseInt(process.env.PORT, 10) || 8080;
+const rawPort = process.env.PORT;
+const parsedPort = rawPort !== undefined ? Number.parseInt(rawPort, 10) : NaN;
+const port =
+  Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535
+    ? parsedPort
+    : 8080;
 const host = '0.0.0.0';
 
 const server = http.createServer((req, res) => {
