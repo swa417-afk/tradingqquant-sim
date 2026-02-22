@@ -2,10 +2,13 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY --chown=node:node index.js package.json ./
-RUN npm install --production
+RUN chown -R node:node /app
 
 USER node
+
+COPY index.js package.json ./
+
+RUN npm install --production
 
 EXPOSE 8080
 
