@@ -40,3 +40,31 @@ server
     console.error('[startup] failed to start server:', err);
     process.exit(1);
   });
+
+const shutdownSignals = ['SIGTERM', 'SIGINT'];
+const shutdownTimeoutMs = 10000;
+
+shutdownSignals.forEach((signal) => {
+  process.on(signal, () => {
+    console.log(`[shutdown] received ${signal}, closing server`);
+
+    const forceShutdownTimeout = setTimeout(() => {
+      console.error('[shutdown] forcing shutdown after timeout');
+      process.exit(1);
+    }, shutdownTimeoutMs);
+
+    if (typeof forceShutdownTimeout.unref === 'function') {
+      forceShutdownTimeout.unref();
+    }
+
+    server.close((err) => {
+      if (err) {
+        console.error('[shutdown] error while closing server:', err);
+        process.exit(1);
+      }
+
+      console.log('[shutdown] server closed gracefully');
+      process.exit(0);
+    });
+  });
+});
