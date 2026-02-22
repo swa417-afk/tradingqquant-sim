@@ -1,9 +1,4 @@
 const http = require('http');
-
-const rawPort = process.env.PORT;
-const parsedPort = rawPort !== undefined ? Number.parseInt(rawPort, 10) : NaN;
-const port =
-  Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535
 const { URL } = require('url');
 
 const port = Number.parseInt(process.env.PORT, 10) || 8080;
