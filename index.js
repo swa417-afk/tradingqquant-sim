@@ -2,7 +2,7 @@ const http = require('http');
 const { URL } = require('url');
 
 // Robust port parsing and fallback
-definePort = () => {
+const definePort = () => {
   const rawPort = process.env.PORT;
   const parsedPort = Number.parseInt(rawPort, 10);
   return Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 ? parsedPort : 8080;
