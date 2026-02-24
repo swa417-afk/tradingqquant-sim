@@ -1,0 +1,59 @@
+name: Build and Push to ECR
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+# id-token: write is required for OIDC role assumption
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ecr-push-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Authenticate to AWS using OIDC — no long-lived credentials needed.
+      # AWS_ROLE_TO_ASSUME must be set as a GitHub Actions variable:
+      #   Settings → Secrets and variables → Actions → Variables
+      # Value: the RoleArn output from the github-oidc-setup CloudFormation stack.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          source-account-id: ${{ vars.AWS_SOURCE_ACCOUNT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to ECR
+        run: |
+          set -euo pipefail
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}"
+
+          docker build \
+            -t "${IMAGE_URI}:${GITHUB_SHA}" \
+            -t "${IMAGE_URI}:latest" \
+            .
+
+          docker push "${IMAGE_URI}:${GITHUB_SHA}"
+          docker push "${IMAGE_URI}:latest"
+
+          echo "Pushed: ${IMAGE_URI}:${GITHUB_SHA}"
+          echo "Pushed: ${IMAGE_URI}:latest"

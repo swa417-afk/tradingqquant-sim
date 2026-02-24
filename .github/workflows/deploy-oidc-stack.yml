@@ -1,0 +1,131 @@
+name: Deploy GitHub OIDC Stack (one-time bootstrap)
+
+# Run manually once to create the OIDC provider and IAM role.
+# After this succeeds, set AWS_ROLE_TO_ASSUME as a GitHub Actions variable
+# using the RoleArn output, then delete AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
+on:
+  workflow_dispatch:
+    inputs:
+      stack_name:
+        description: CloudFormation stack name
+        required: true
+        default: github-oidc-tradingqquant-sim
+      github_org:
+        description: GitHub org / username
+        required: true
+        default: swa417-afk
+      github_repo:
+        description: GitHub repository name
+        required: true
+        default: tradingqquant-sim
+      existing_oidc_provider_arn:
+        description: >
+          Existing OIDC provider ARN (leave blank to create a new one).
+          Only one OIDC provider per URL is allowed per AWS account.
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      role_arn: ${{ steps.outputs.outputs.role_arn }}
+      oidc_provider_arn: ${{ steps.outputs.outputs.oidc_provider_arn }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Bootstrap step: uses long-lived credentials so we can create the OIDC
+      # infrastructure that will replace them.
+      - name: Configure AWS credentials (bootstrap)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Deploy CloudFormation stack
+        id: deploy
+        run: |
+          set -euo pipefail
+
+          STACK_NAME="${{ github.event.inputs.stack_name }}"
+          TEMPLATE_FILE="github-oidc-setup.yaml"
+
+          PARAMS="ParameterKey=GitHubOrg,ParameterValue=${{ github.event.inputs.github_org }}"
+          PARAMS="${PARAMS} ParameterKey=GitHubRepo,ParameterValue=${{ github.event.inputs.github_repo }}"
+
+          EXISTING_ARN="${{ github.event.inputs.existing_oidc_provider_arn }}"
+          if [[ -n "${EXISTING_ARN}" ]]; then
+            PARAMS="${PARAMS} ParameterKey=OIDCProviderArn,ParameterValue=${EXISTING_ARN}"
+          fi
+
+          # Check if stack already exists
+          if aws cloudformation describe-stacks --stack-name "${STACK_NAME}" &>/dev/null; then
+            echo "Updating existing stack: ${STACK_NAME}"
+            aws cloudformation update-stack \
+              --stack-name "${STACK_NAME}" \
+              --template-body "file://${TEMPLATE_FILE}" \
+              --parameters ${PARAMS} \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --region us-east-1 || {
+                # No changes to deploy is not an error
+                echo "No changes to deploy (or update failed)."
+              }
+
+            aws cloudformation wait stack-update-complete \
+              --stack-name "${STACK_NAME}" \
+              --region us-east-1
+          else
+            echo "Creating new stack: ${STACK_NAME}"
+            aws cloudformation create-stack \
+              --stack-name "${STACK_NAME}" \
+              --template-body "file://${TEMPLATE_FILE}" \
+              --parameters ${PARAMS} \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --region us-east-1
+
+            aws cloudformation wait stack-create-complete \
+              --stack-name "${STACK_NAME}" \
+              --region us-east-1
+          fi
+
+          echo "Stack deployment complete."
+
+      - name: Capture CloudFormation outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          STACK_NAME="${{ github.event.inputs.stack_name }}"
+
+          ROLE_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --region us-east-1 \
+            --query "Stacks[0].Outputs[?OutputKey=='RoleArn'].OutputValue" \
+            --output text)
+
+          OIDC_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --region us-east-1 \
+            --query "Stacks[0].Outputs[?OutputKey=='OIDCProviderArn'].OutputValue" \
+            --output text)
+
+          echo "role_arn=${ROLE_ARN}" >> "$GITHUB_OUTPUT"
+          echo "oidc_provider_arn=${OIDC_ARN}" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════════╗"
+          echo "║  OIDC Stack Deployed Successfully                               ║"
+          echo "╠══════════════════════════════════════════════════════════════════╣"
+          echo "║  OIDC Provider ARN : ${OIDC_ARN}"
+          echo "║  Role ARN          : ${ROLE_ARN}"
+          echo "╠══════════════════════════════════════════════════════════════════╣"
+          echo "║  Next steps:                                                    ║"
+          echo "║  1. Go to Settings → Secrets and variables → Actions → Variables║"
+          echo "║  2. Add variable: AWS_ROLE_TO_ASSUME = <Role ARN above>         ║"
+          echo "║  3. Delete secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY   ║"
+          echo "╚══════════════════════════════════════════════════════════════════╝"

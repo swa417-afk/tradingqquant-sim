@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  GitHub Actions OIDC Provider and IAM Role for tradingqquant-sim.
+  Creates the OIDC identity provider and a least-privilege IAM role that
+  GitHub Actions can assume to push Docker images to Amazon ECR.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: swa417-afk
+    Description: GitHub organization or username (case-sensitive)
+
+  GitHubRepo:
+    Type: String
+    Default: tradingqquant-sim
+    Description: GitHub repository name (case-sensitive)
+
+  OIDCProviderArn:
+    Type: String
+    Default: ''
+    Description: >
+      ARN of an existing GitHub OIDC provider. Leave blank to create a new one.
+      (Only one OIDC provider per URL is allowed per AWS account.)
+
+Conditions:
+  CreateOIDCProvider: !Equals [!Ref OIDCProviderArn, '']
+
+Resources:
+
+  # ── GitHub OIDC Identity Provider ──────────────────────────────────────────
+  # Allows AWS to verify JWT tokens issued by GitHub Actions.
+  # Thumbprints sourced from https://github.blog/changelog/2023-06-27-github-actions-update-on-oidc-integration-with-aws/
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  # ── IAM Role for GitHub Actions ────────────────────────────────────────────
+  GitHubActionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'github-actions-${GitHubRepo}-ecr-push'
+      Description: !Sub 'Allows ${GitHubOrg}/${GitHubRepo} GitHub Actions to push to ECR'
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateOIDCProvider
+                - !Ref GitHubOIDCProvider
+                - !Ref OIDCProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+              StringLike:
+                # Allow any branch/tag/PR in this specific repo
+                'token.actions.githubusercontent.com:sub':
+                  !Sub 'repo:${GitHubOrg}/${GitHubRepo}:*'
+
+  # ── ECR Push Policy ────────────────────────────────────────────────────────
+  ECRPushPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub 'github-actions-${GitHubRepo}-ecr-push-policy'
+      Description: Least-privilege policy for pushing Docker images to ECR
+      Roles:
+        - !Ref GitHubActionsRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # ecr:GetAuthorizationToken is account-scoped; cannot be restricted to
+          # a specific repository resource.
+          - Sid: ECRGetAuthToken
+            Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+            Resource: '*'
+
+          # All repository-level push/pull actions
+          - Sid: ECRRepositoryAccess
+            Effect: Allow
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:CompleteLayerUpload
+              - ecr:InitiateLayerUpload
+              - ecr:PutImage
+              - ecr:UploadLayerPart
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+              - ecr:DescribeRepositories
+              - ecr:DescribeImages
+            Resource:
+              - !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/*'
+
+Outputs:
+  OIDCProviderArn:
+    Description: GitHub OIDC Provider ARN (use as OIDCProviderArn param if re-running)
+    Value: !If
+      - CreateOIDCProvider
+      - !Ref GitHubOIDCProvider
+      - !Ref OIDCProviderArn
+    Export:
+      Name: !Sub '${AWS::StackName}-OIDCProviderArn'
+
+  RoleArn:
+    Description: IAM Role ARN — set this as the GitHub Actions variable AWS_ROLE_TO_ASSUME
+    Value: !GetAtt GitHubActionsRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-RoleArn'
+
+  RoleName:
+    Description: IAM Role Name
+    Value: !Ref GitHubActionsRole
+    Export:
+      Name: !Sub '${AWS::StackName}-RoleName'

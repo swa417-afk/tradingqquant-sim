@@ -34,6 +34,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          source-account-id: ${{ vars.AWS_SOURCE_ACCOUNT_ID }}
           aws-region: ${{ env.AWS_REGION }}
 
       # Fallback: use traditional AWS access key authentication
