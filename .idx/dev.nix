@@ -6,13 +6,16 @@
   # Use https://search.nixos.org/packages to find packages
   packages = [
     # pkgs.go
-    # pkgs.python311
-    # pkgs.python311Packages.pip
+    pkgs.python311
+    pkgs.python311Packages.pip
+    pkgs.python311Packages.anthropic
     # pkgs.nodejs_20
     # pkgs.nodePackages.nodemon
   ];
   # Sets environment variables in the workspace
-  env = {};
+  env = {
+    API_KEY = "your-secret-key";
+  };
   idx = {
     # Search for the extensions you want on https://open-vsx.org/ and use "publisher.id"
     extensions = [
@@ -43,6 +46,7 @@
         # npm-install = "npm install";
         # Open editors for the following files by default, if they exist:
         default.openFiles = [ ".idx/dev.nix" "README.md" ];
+        build = "touch build.log";
       };
       # Runs when the workspace is (re)started
       onStart = {
