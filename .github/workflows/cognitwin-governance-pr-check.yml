@@ -1,0 +1,165 @@
+name: CogniTwin Governance PR Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  governance-gate:
+    name: Sovereignty Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── Detect governed-path changes ─────────────────────────────────────
+      - name: Detect governed-path changes
+        id: governed
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          TOUCHES_INVARIANTS=false
+          TOUCHES_RULES=false
+
+          # Check sovereign invariant definitions
+          if echo "$CHANGED" | grep -qE \
+            '^cognitwin/governance/invariants\.py$|^cognitwin/sdk/schema\.ts$'; then
+            TOUCHES_INVARIANTS=true
+          fi
+
+          # Check inference rule sets
+          if echo "$CHANGED" | grep -qE \
+            '^cognitwin/governance/rules\.py$|^cognitwin/governance/audit\.py$'; then
+            TOUCHES_RULES=true
+          fi
+
+          echo "touches_invariants=$TOUCHES_INVARIANTS" >> "$GITHUB_OUTPUT"
+          echo "touches_rules=$TOUCHES_RULES"          >> "$GITHUB_OUTPUT"
+
+          # Check for governance-override label
+          LABELS=$(echo '${{ toJson(github.event.pull_request.labels.*.name) }}')
+          if echo "$LABELS" | grep -q '"governance-override"'; then
+            echo "has_override=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_override=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Evaluate RULE-004 ─────────────────────────────────────────────────
+      - name: Evaluate Governance Rule (RULE-004)
+        id: rule_eval
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TOUCHES_INVARIANTS: ${{ steps.governed.outputs.touches_invariants }}
+          TOUCHES_RULES: ${{ steps.governed.outputs.touches_rules }}
+          HAS_OVERRIDE: ${{ steps.governed.outputs.has_override }}
+          COGNITWIN_AUDIT_LOG: /tmp/cognitwin_audit.ndjson
+        run: |
+          python - <<'PYEOF'
+          import os, sys, json
+          sys.path.insert(0, ".")
+
+          from cognitwin.governance.rules import RULE_INDEX, RuleOutcome
+          from cognitwin.governance.audit import log_rule_evaluation
+
+          pr_number = os.environ["PR_NUMBER"]
+          touches_invariants = os.environ["TOUCHES_INVARIANTS"] == "true"
+          touches_rules       = os.environ["TOUCHES_RULES"]       == "true"
+          has_override        = os.environ["HAS_OVERRIDE"]        == "true"
+
+          rule = RULE_INDEX["RULE-004"]
+          payload = {
+              "touchesInvariants":     touches_invariants,
+              "touchesRules":          touches_rules,
+              "hasGovernanceOverride": has_override,
+          }
+          outcome, rationale = rule.evaluate(payload)
+
+          severity = (
+              rule.severity_on_reject if outcome == RuleOutcome.REJECT
+              else (rule.severity_on_flag if outcome == RuleOutcome.FLAG else "info")
+          )
+
+          entry = log_rule_evaluation(
+              rule_id=rule.id,
+              rule_name=rule.name,
+              outcome=outcome.value,
+              triggered_by=f"PR#{pr_number}",
+              severity=severity,
+              rationale=rationale,
+          )
+
+          print(f"::notice::RuleEvaluation logged — entry_id={entry.entry_id}")
+          result = {
+              "outcome": outcome.value,
+              "severity": severity,
+              "rationale": rationale,
+              "entry_id": entry.entry_id,
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"outcome={outcome.value}\n")
+              fh.write(f"rationale={rationale}\n")
+              fh.write(f"entry_id={entry.entry_id}\n")
+
+          if outcome == RuleOutcome.REJECT:
+              print(f"::error title=Governance Rejection::{rationale}")
+              sys.exit(1)
+          elif outcome == RuleOutcome.FLAG:
+              print(f"::warning title=Governance Flag::{rationale}")
+          PYEOF
+
+      # ── Upload audit log as artefact ──────────────────────────────────────
+      - name: Upload audit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cognitwin-rule-evaluation-audit-pr${{ github.event.pull_request.number }}
+          path: /tmp/cognitwin_audit.ndjson
+          if-no-files-found: ignore
+
+      # ── PR comment ────────────────────────────────────────────────────────
+      - name: Post governance result as PR comment
+        if: always() && (steps.governed.outputs.touches_invariants == 'true' || steps.governed.outputs.touches_rules == 'true')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const outcome   = '${{ steps.rule_eval.outputs.outcome }}';
+            const rationale = '${{ steps.rule_eval.outputs.rationale }}';
+            const entryId   = '${{ steps.rule_eval.outputs.entry_id }}';
+            const icon      = outcome === 'reject' ? '🚫' : outcome === 'flag' ? '⚠️' : '✅';
+            const body = [
+              `## ${icon} CogniTwin Governance Gate — \`${outcome.toUpperCase()}\``,
+              '',
+              `**Rule:** RULE-004 — governance_pr_gate`,
+              `**Rationale:** ${rationale}`,
+              `**Audit entry:** \`${entryId}\``,
+              '',
+              outcome === 'reject'
+                ? '> **Rejected by design.** Apply label `governance-override` after explicit governance review to proceed.'
+                : outcome === 'flag'
+                ? '> Flagged for governance review. Proceed with caution.'
+                : '> No governed paths affected.',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner:    context.repo.owner,
+              repo:     context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });

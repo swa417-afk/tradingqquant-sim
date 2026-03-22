@@ -1,0 +1,126 @@
+name: CogniTwin Charter Verification
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "cognitwin/**"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Charter release tag to verify against (e.g. charter/v0.1.0)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  charter-verify:
+    name: Sovereign Charter Integrity
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── Verify charter against manifest ──────────────────────────────────
+      - name: Verify Sovereign Charter
+        id: verify
+        env:
+          COGNITWIN_AUDIT_LOG: /tmp/cognitwin_charter_audit.ndjson
+        run: |
+          python - <<'PYEOF'
+          import sys, json, os
+          sys.path.insert(0, ".")
+
+          from cognitwin.charter.verify import verify_manifest
+          from cognitwin.governance.rules import RULE_INDEX, RuleOutcome
+          from cognitwin.governance.audit import log_rule_evaluation
+          from pathlib import Path
+
+          repo_root = Path(".")
+          manifest_path = repo_root / "cognitwin" / "charter" / "manifest.json"
+
+          result = verify_manifest(manifest_path, repo_root)
+
+          print(json.dumps(result, indent=2))
+
+          # Feed into RULE-006
+          rule = RULE_INDEX["RULE-006"]
+          outcome, rationale = rule.evaluate({
+              "deployedHash": result.get("canonicalHash", ""),
+              "charterHash":  result.get("expectedHash", ""),
+          })
+          severity = rule.severity_on_reject if outcome == RuleOutcome.REJECT else "info"
+
+          triggered_by = os.environ.get("GITHUB_SHA", "unknown")[:12]
+          log_rule_evaluation(
+              rule_id=rule.id,
+              rule_name=rule.name,
+              outcome=outcome.value,
+              triggered_by=triggered_by,
+              severity=severity,
+              rationale=rationale,
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"passed={str(result['passed']).lower()}\n")
+              fh.write(f"canonical_hash={result.get('canonicalHash','')}\n")
+              fh.write(f"expected_hash={result.get('expectedHash','')}\n")
+              deviations = result.get("deviations", [])
+              fh.write(f"deviation_count={len(deviations)}\n")
+
+          if not result["passed"]:
+              if result.get("deviations"):
+                  for d in result["deviations"]:
+                      print(f"::error title=Charter Deviation::{d['path']} — "
+                            f"expected {d['expected'][:12]}… got {d['actual'][:12]}…")
+              if result.get("missing"):
+                  for p in result["missing"]:
+                      print(f"::error title=Charter Missing::{p}")
+              print(f"::error title=Charter Verification Failed::{rationale}")
+              sys.exit(1)
+          else:
+              print(f"::notice title=Charter Verified::Hash {result['canonicalHash'][:16]}… matches manifest.")
+          PYEOF
+
+      # ── Upload charter audit log ──────────────────────────────────────────
+      - name: Upload charter audit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cognitwin-charter-audit-${{ github.run_id }}
+          path: /tmp/cognitwin_charter_audit.ndjson
+          if-no-files-found: ignore
+
+      # ── Summary ───────────────────────────────────────────────────────────
+      - name: Write job summary
+        if: always()
+        run: |
+          PASSED="${{ steps.verify.outputs.passed }}"
+          CANONICAL="${{ steps.verify.outputs.canonical_hash }}"
+          EXPECTED="${{ steps.verify.outputs.expected_hash }}"
+          DEVIATIONS="${{ steps.verify.outputs.deviation_count }}"
+
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## CogniTwin Sovereign Charter Verification
+
+          | Field            | Value                            |
+          |-----------------|----------------------------------|
+          | Result           | $([ "$PASSED" = "true" ] && echo "✅ PASS" || echo "🚫 FAIL") |
+          | Canonical hash   | \`${CANONICAL:0:16}…\`           |
+          | Expected hash    | \`${EXPECTED:0:16}…\`            |
+          | Deviations       | $DEVIATIONS                      |
+          | Commit           | \`${{ github.sha }}\`            |
+
+          EOF

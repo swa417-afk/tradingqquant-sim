@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "0.1.0",
+  "generatedAt": "2026-03-22T01:28:40.700688+00:00",
+  "canonicalHash": "ccb04e145b93f8c840c30d4fdf79a8503bdfb2911e445905777fdf772fa5badd",
+  "files": {
+    "cognitwin/sdk/schema.ts": "8892b00bd15f9b733147c48dcbfe5a2992db3699578840c4fab0c64f43b370e3",
+    "cognitwin/sdk/events.ts": "68cc6c2f43ff7194ec55d286ccf7274bb6008feca33cc61cf6ec90ab6dc43564",
+    "cognitwin/sdk/client.ts": "4e8f891057d0f9165cafaaff34d03c876e9d829fe99b8c7fcad1e70be9a52cbd",
+    "cognitwin/sdk/index.ts": "a2cdce3501a5f3d1f42af4655fb6262bf7b8d323d12d8dc8c8c14ea7849c7196",
+    "cognitwin/governance/invariants.py": "93b2a9d5f16976c9d390e3f33c8fd318c2fbfc1552bc3159ccf4f8e1860cb333",
+    "cognitwin/governance/rules.py": "3e4bdc2c2761c2cc171b9a7980e01de4029cec7e4f18dadcd0a98f43cd4cfbcb",
+    "cognitwin/governance/audit.py": "cc3639f8af98f265de22a15fc88b80285ac5bad8661586f62917eb6b07f17773",
+    "cognitwin/governance/__init__.py": "87e41aabc90bdd85b9e5abb2c1c1e08131e57b55acee85493bfd1119279c6900",
+    "cognitwin/charter/generate_manifest.py": "9b07828ab309e5b4a37e425c79045a6ed8a7bfe4c25e6ddc8fe0ec4b4de4d01d",
+    "cognitwin/charter/verify.py": "07f482b0b2cf3393a69caac3849e3c3f9b784d3e51ee44a17cf7ae10670d265d"
+  },
+  "governedPaths": [
+    "cognitwin/sdk/schema.ts",
+    "cognitwin/sdk/events.ts",
+    "cognitwin/sdk/client.ts",
+    "cognitwin/sdk/index.ts",
+    "cognitwin/governance/invariants.py",
+    "cognitwin/governance/rules.py",
+    "cognitwin/governance/audit.py",
+    "cognitwin/governance/__init__.py",
+    "cognitwin/charter/generate_manifest.py",
+    "cognitwin/charter/verify.py"
+  ]
+}
