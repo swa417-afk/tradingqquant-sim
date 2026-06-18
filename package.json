@@ -1,0 +1,38 @@
+{
+  "name": "trading-quant-simulator",
+  "description": "AI-powered quantitative trading simulator with predictive analytics, institutional flow tracking, and strategy backtesting.",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "serve": "firebase emulators:start",
+    "start": "npm run serve",
+    "deploy": "firebase deploy",
+    "logs": "firebase functions:log",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "firebase-functions": "^5.0.0",
+    "express": "^4.19.0",
+    "cors": "^2.8.5",
+    "axios": "^1.6.0",
+    "dotenv": "^16.4.0",
+    "socket.io": "^4.7.5",
+    "ws": "^8.16.0",
+    "ccxt": "^4.2.83",
+    "mathjs": "^12.4.1",
+    "ml-matrix": "^6.10.5",
+    "simple-statistics": "^7.8.3",
+    "technicalindicators": "^3.1.0",
+    "lodash": "^4.17.21",
+    "moment": "^2.30.1"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "firebase-tools": "^13.0.0"
+  }
+}

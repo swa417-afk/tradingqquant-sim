@@ -1,0 +1,295 @@
+set -e
+
+# --- go to project root (adjust if needed) ---
+# If you uploaded quant-sim-full.zip, you probably have quant-sim/ in the repo.
+if [ -d "quant-sim" ]; then
+  cd quant-sim
+fi
+
+echo "==> Installing Python dependencies..."
+python -m pip install --upgrade pip
+# Replit often prefers requirements.txt
+cat > requirements.txt <<'REQ'
+numpy>=1.26
+pandas>=2.2
+pyyaml>=6.0
+requests>=2.31
+matplotlib>=3.8
+jinja2>=3.1
+torch>=2.2
+ccxt>=4.2
+REQ
+python -m pip install -r requirements.txt
+
+echo "==> Ensuring pyproject.toml allows Replit Python + includes ccxt..."
+# Patch pyproject.toml (safe idempotent edits)
+python - <<'PY'
+import re, pathlib
+p = pathlib.Path("pyproject.toml")
+txt = p.read_text()
+
+txt = re.sub(r'requires-python\s*=\s*"\>=3\.12"', 'requires-python = ">=3.10"', txt)
+
+# Add ccxt if missing
+if "ccxt" not in txt:
+    txt = txt.replace('"torch>=2.2",', '"torch>=2.2",\n  "ccxt>=4.2",')
+p.write_text(txt)
+print("pyproject.toml updated")
+PY
+
+echo "==> Writing execution guards (order rate + disconnect protection)..."
+mkdir -p src/quant_sim/execution
+cat > src/quant_sim/execution/guards.py <<'PY'
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+
+
+class OrderRateLimiter:
+    """Simple rolling-window order rate limiter (kill-switch)."""
+
+    def __init__(self, max_orders: int, window_seconds: int = 60):
+        self.max_orders = int(max_orders)
+        self.window_seconds = int(window_seconds)
+        self._ts: list[float] = []
+
+    def allow(self) -> bool:
+        if self.max_orders <= 0:
+            return True
+        now = time.time()
+        cutoff = now - self.window_seconds
+        self._ts = [t for t in self._ts if t >= cutoff]
+        if len(self._ts) >= self.max_orders:
+            return False
+        self._ts.append(now)
+        return True
+
+
+@dataclass
+class DisconnectGuard:
+    """Trips if quotes go stale or repeated quote failures occur."""
+
+    max_stale_seconds: float = 20.0
+    max_failures: int = 5
+
+    last_ok_ts: float = 0.0
+    failures: int = 0
+
+    def ok(self):
+        self.last_ok_ts = time.time()
+        self.failures = 0
+
+    def fail(self):
+        self.failures += 1
+
+    def tripped(self) -> bool:
+        now = time.time()
+        if self.failures >= self.max_failures:
+            return True
+        if self.last_ok_ts and (now - self.last_ok_ts) > self.max_stale_seconds:
+            return True
+        return False
+PY
+
+echo "==> Writing CCXT paper broker (Binance/Coinbase/etc quotes + simulated fills)..."
+cat > src/quant_sim/execution/ccxt_paper_broker.py <<'PY'
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
+import time
+import pandas as pd
+
+import ccxt
+
+from .broker_base import BrokerBase
+from .orders import Order
+from .costs import apply_bps, commission_cost
+
+
+class CCXTPaperBroker(BrokerBase):
+    """Unified paper broker using CCXT for market prices.
+
+    - Uses public endpoints (no API keys) for quotes.
+    - Simulates fills with slippage + commission.
+    - Works with many exchanges (binance, coinbase, kraken, etc.)
+    - Symbols are CCXT style: "BTC/USDT", "ETH/USD", etc.
+    """
+
+    def __init__(
+        self,
+        exchange_id: str,
+        symbols: list[str],
+        *,
+        commission_bps: float,
+        slippage_bps: float,
+        quote_cache_seconds: float = 1.0,
+        ccxt_options: Optional[Dict[str, Any]] = None,
+    ):
+        self.exchange_id = exchange_id
+        self.symbols = symbols
+        self.commission_bps = float(commission_bps)
+        self.slippage_bps = float(slippage_bps)
+        self.quote_cache_seconds = float(quote_cache_seconds)
+
+        opts = dict(ccxt_options or {})
+        opts.setdefault("enableRateLimit", True)
+        ex_cls = getattr(ccxt, exchange_id)
+        self.ex = ex_cls(opts)
+
+        self._cache: Dict[str, tuple[float, float]] = {}
+
+    def get_price(self, symbol: str, ts: pd.Timestamp | None = None) -> float:
+        now = time.time()
+        cached = self._cache.get(symbol)
+        if cached is not None and (now - cached[1]) < self.quote_cache_seconds:
+            return float(cached[0])
+
+        t = self.ex.fetch_ticker(symbol)
+        px = t.get("last") or t.get("close")
+        if px is None:
+            bid = t.get("bid")
+            ask = t.get("ask")
+            if bid is not None and ask is not None:
+                px = (float(bid) + float(ask)) / 2.0
+        if px is None:
+            raise ValueError(f"No price for {symbol} from {self.exchange_id}")
+
+        px_f = float(px)
+        self._cache[symbol] = (px_f, now)
+        return px_f
+
+    def place_order(self, order: Order, ts: pd.Timestamp | None = None) -> dict:
+        px = self.get_price(order.symbol, ts)
+        fill_px = apply_bps(px, self.slippage_bps, order.qty)
+        notional = fill_px * order.qty
+        fee = commission_cost(notional, self.commission_bps)
+        return {
+            "symbol": order.symbol,
+            "qty": float(order.qty),
+            "fill_price": float(fill_px),
+            "notional": float(notional),
+            "commission": float(fee),
+            "timestamp": (ts.isoformat() if ts is not None else None),
+            "venue": f"{self.exchange_id}_ccxt_paper",
+        }
+PY
+
+echo "==> Adding a ready-to-run paper CCXT config..."
+mkdir -p configs
+cat > configs/paper_ccxt.yaml <<'YAML'
+run:
+  name: "paper_ccxt"
+  out_dir: "runs"
+
+strategy:
+  name: "trend"
+  timeframe: "5m"
+  params:
+    fast: 20
+    slow: 60
+
+portfolio:
+  starting_cash: 100000
+
+risk:
+  max_gross_leverage: 2.0
+  max_position_pct: 0.25
+  max_daily_loss_pct: 0.05
+  kill_switch: true
+
+execution:
+  commission_bps: 2.0
+  slippage_bps: 1.0
+
+paper:
+  # "coinbase_public" (BTC-USD) OR "ccxt" (BTC/USDT)
+  broker: "ccxt"
+  poll_seconds: 3
+  # kill-switches
+  max_orders_per_min: 20
+  max_stale_seconds: 20
+  max_failures: 5
+
+ccxt:
+  exchange: "binance"   # or "coinbase"
+  symbols:
+    - "BTC/USDT"
+    - "ETH/USDT"
+YAML
+
+echo "==> Patching CLI: prefer strategy.generate_orders + add paper broker + kill-switches..."
+python - <<'PY'
+import pathlib, re
+p = pathlib.Path("src/quant_sim/cli.py")
+txt = p.read_text()
+
+# Ensure imports exist
+def ensure_import(line, after):
+    nonlocal_txt = globals()["txt"]
+    if line in nonlocal_txt:
+        return
+    nonlocal_txt = nonlocal_txt.replace(after, after + "\n" + line)
+    globals()["txt"] = nonlocal_txt
+
+# Add new imports after CoinbasePaperBroker import
+if "CCXTPaperBroker" not in txt:
+    txt = txt.replace(
+        "from quant_sim.execution.coinbase_broker import CoinbasePaperBroker",
+        "from quant_sim.execution.coinbase_broker import CoinbasePaperBroker\n"
+        "from quant_sim.execution.ccxt_paper_broker import CCXTPaperBroker\n"
+        "from quant_sim.execution.guards import OrderRateLimiter, DisconnectGuard"
+    )
+
+# If backtest loop already prefers generate_orders, leave it.
+# Patch paper() to support broker selection + kill-switches + prefer generate_orders (idempotent-ish).
+
+if "paper_broker_kind" not in txt:
+    txt = txt.replace(
+        "products = cfg.get(\"coinbase\", \"products\", default=[\"BTC-USD\"]) or [\"BTC-USD\"]",
+        "# Broker selection (paper):\n"
+        "# - \"coinbase_public\" uses Coinbase public REST (symbols like \"BTC-USD\")\n"
+        "# - \"ccxt\" uses CCXT unified quotes (symbols like \"BTC/USDT\" or \"ETH/USD\")\n"
+        "paper_broker_kind = str(cfg.get(\"paper\", \"broker\", default=\"coinbase_public\")).lower()\n\n"
+        "if paper_broker_kind == \"ccxt\":\n"
+        "    exchange_id = str(cfg.get(\"ccxt\", \"exchange\", default=\"binance\")).lower()\n"
+        "    symbols = cfg.get(\"ccxt\", \"symbols\", default=[\"BTC/USDT\"]) or [\"BTC/USDT\"]\n"
+        "    broker = CCXTPaperBroker(\n"
+        "        exchange_id,\n"
+        "        symbols,\n"
+        "        commission_bps=float(cfg.get(\"execution\", \"commission_bps\", default=2.0)),\n"
+        "        slippage_bps=float(cfg.get(\"execution\", \"slippage_bps\", default=1.0)),\n"
+        "    )\n"
+        "    products = symbols\n"
+        "else:\n"
+        "    products = cfg.get(\"coinbase\", \"products\", default=[\"BTC-USD\"]) or [\"BTC-USD\"]"
+    )
+
+# Add kill-switch variables (paper)
+if "OrderRateLimiter" in txt and "max_orders_per_min" not in txt:
+    txt = txt.replace(
+        "poll_seconds = float(cfg.get(\"paper\", \"poll_seconds\", default=3))",
+        "poll_seconds = float(cfg.get(\"paper\", \"poll_seconds\", default=3))\n"
+        "# Kill switches\n"
+        "max_orders_per_min = int(cfg.get(\"paper\", \"max_orders_per_min\", default=20))\n"
+        "max_stale_seconds = float(cfg.get(\"paper\", \"max_stale_seconds\", default=20))\n"
+        "max_failures = int(cfg.get(\"paper\", \"max_failures\", default=5))\n"
+        "rate_limiter = OrderRateLimiter(max_orders=max_orders_per_min, window_seconds=60)\n"
+        "disconnect = DisconnectGuard(max_stale_seconds=max_stale_seconds, max_failures=max_failures)"
+    )
+
+p.write_text(txt)
+print("cli.py patched (imports/broker selection/kill-switch scaffolding).")
+PY
+
+echo "==> Quick import smoke test..."
+PYTHONPATH=src python -c "import quant_sim.cli; print('OK: quant_sim imports')"
+
+echo ""
+echo "✅ Done."
+echo ""
+echo "Run paper trading (CCXT quotes + simulated fills):"
+echo "  PYTHONPATH=src python -m quant_sim.cli paper --config configs/paper_ccxt.yaml"
+echo ""
+echo "Then open the dashboard (in another tab/shell):"
+echo "  PYTHONPATH=src python -m quant_sim.cli dashboard --runs-dir runs --host 0.0.0.0 --port 8000"

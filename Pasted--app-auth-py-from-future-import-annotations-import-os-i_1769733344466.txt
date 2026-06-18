@@ -1,0 +1,249 @@
+# app/auth.py
+from __future__ import annotations
+
+import os
+import secrets
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Response, Request
+from pydantic import BaseModel, EmailStr, Field
+
+from sqlalchemy import (
+    create_engine, Column, Integer, String, DateTime, ForeignKey, Text, UniqueConstraint
+)
+from sqlalchemy.orm import sessionmaker, declarative_base, relationship, Session
+
+from passlib.context import CryptContext
+
+# -----------------------------
+# DB setup (swap to Postgres if you want)
+# -----------------------------
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./quant_sim.db")
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, connect_args=connect_args)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+Base = declarative_base()
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+SESSION_TTL_DAYS = int(os.getenv("SESSION_TTL_DAYS", "14"))
+COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "qs_session")
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"  # set true in prod
+COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax")  # "lax" or "strict" or "none"
+COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN")  # optional
+
+# -----------------------------
+# Models
+# -----------------------------
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True)
+    email = Column(String(320), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    profile = relationship("Profile", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    sessions = relationship("SessionModel", back_populates="user", cascade="all, delete-orphan")
+
+class Profile(Base):
+    __tablename__ = "profiles"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+
+    display_name = Column(String(120), default="")
+    avatar_url = Column(Text, default="")
+    default_exchange = Column(String(64), default="coinbase")
+    base_currency = Column(String(16), default="USD")
+
+    # quant prefs (examples)
+    risk_mode = Column(String(32), default="balanced")     # conservative/balanced/aggressive
+    max_leverage = Column(String(16), default="2.0")       # store string to avoid float issues
+    max_position_pct = Column(String(16), default="0.25")  # 25%
+    notes = Column(Text, default="")
+
+    user = relationship("User", back_populates="profile")
+
+class SessionModel(Base):
+    __tablename__ = "sessions"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token = Column(String(128), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+    user = relationship("User", back_populates="sessions")
+
+Base.metadata.create_all(bind=engine)
+
+# -----------------------------
+# Schemas
+# -----------------------------
+class SignUpIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+
+class ProfileOut(BaseModel):
+    email: EmailStr
+    display_name: str
+    avatar_url: str
+    default_exchange: str
+    base_currency: str
+    risk_mode: str
+    max_leverage: str
+    max_position_pct: str
+    notes: str
+
+class ProfileUpdate(BaseModel):
+    display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    default_exchange: Optional[str] = None
+    base_currency: Optional[str] = None
+    risk_mode: Optional[str] = None
+    max_leverage: Optional[str] = None
+    max_position_pct: Optional[str] = None
+    notes: Optional[str] = None
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def hash_password(pw: str) -> str:
+    return pwd_context.hash(pw)
+
+def verify_password(pw: str, pw_hash: str) -> bool:
+    return pwd_context.verify(pw, pw_hash)
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+def set_auth_cookie(resp: Response, token: str, expires_at: datetime):
+    max_age = int((expires_at - now_utc()).total_seconds())
+    resp.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=max_age,
+        expires=max_age,
+        domain=COOKIE_DOMAIN,
+        path="/",
+    )
+
+def clear_auth_cookie(resp: Response):
+    resp.delete_cookie(key=COOKIE_NAME, domain=COOKIE_DOMAIN, path="/")
+
+def create_session(db: Session, user_id: int) -> SessionModel:
+    token = secrets.token_urlsafe(48)
+    expires_at = now_utc() + timedelta(days=SESSION_TTL_DAYS)
+    s = SessionModel(user_id=user_id, token=token, expires_at=expires_at)
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s
+
+def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    s = db.query(SessionModel).filter(SessionModel.token == token).first()
+    if not s or s.expires_at <= now_utc():
+        raise HTTPException(status_code=401, detail="Session expired")
+
+    user = db.query(User).filter(User.id == s.user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return user
+
+# -----------------------------
+# Router
+# -----------------------------
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+@router.post("/signup")
+def signup(payload: SignUpIn, response: Response, db: Session = Depends(get_db)):
+    existing = db.query(User).filter(User.email == payload.email.lower()).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    user = User(email=payload.email.lower(), password_hash=hash_password(payload.password))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    profile = Profile(user_id=user.id, display_name=payload.email.split("@")[0])
+    db.add(profile)
+    db.commit()
+
+    sess = create_session(db, user.id)
+    set_auth_cookie(response, sess.token, sess.expires_at)
+    return {"ok": True}
+
+@router.post("/signin")
+def signin(payload: SignUpIn, response: Response, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == payload.email.lower()).first()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    sess = create_session(db, user.id)
+    set_auth_cookie(response, sess.token, sess.expires_at)
+    return {"ok": True}
+
+@router.post("/signout")
+def signout(response: Response, request: Request, db: Session = Depends(get_db)):
+    token = request.cookies.get(COOKIE_NAME)
+    if token:
+        db.query(SessionModel).filter(SessionModel.token == token).delete()
+        db.commit()
+    clear_auth_cookie(response)
+    return {"ok": True}
+
+@router.get("/me", response_model=ProfileOut)
+def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    prof = db.query(Profile).filter(Profile.user_id == user.id).first()
+    return ProfileOut(
+        email=user.email,
+        display_name=prof.display_name if prof else "",
+        avatar_url=prof.avatar_url if prof else "",
+        default_exchange=prof.default_exchange if prof else "coinbase",
+        base_currency=prof.base_currency if prof else "USD",
+        risk_mode=prof.risk_mode if prof else "balanced",
+        max_leverage=prof.max_leverage if prof else "2.0",
+        max_position_pct=prof.max_position_pct if prof else "0.25",
+        notes=prof.notes if prof else "",
+    )
+
+@router.patch("/profile", response_model=ProfileOut)
+def update_profile(payload: ProfileUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    prof = db.query(Profile).filter(Profile.user_id == user.id).first()
+    if not prof:
+        prof = Profile(user_id=user.id)
+        db.add(prof)
+        db.commit()
+        db.refresh(prof)
+
+    for k, v in payload.model_dump(exclude_none=True).items():
+        setattr(prof, k, v)
+
+    db.commit()
+    db.refresh(prof)
+
+    return ProfileOut(
+        email=user.email,
+        display_name=prof.display_name,
+        avatar_url=prof.avatar_url,
+        default_exchange=prof.default_exchange,
+        base_currency=prof.base_currency,
+        risk_mode=prof.risk_mode,
+        max_leverage=prof.max_leverage,
+        max_position_pct=prof.max_position_pct,
+        notes=prof.notes,
+    )
