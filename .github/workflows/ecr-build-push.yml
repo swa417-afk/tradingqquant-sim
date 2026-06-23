@@ -28,9 +28,74 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Validate AWS credentials configuration before attempting ECR login
+      - name: Validate AWS and ECR configuration
+        env:
+          AWS_ROLE: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          AWS_ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          ECR_REG: ${{ secrets.ECR_REGISTRY }}
+          ECR_REPO: ${{ secrets.ECR_REPOSITORY }}
+        run: |
+          echo "Validating AWS and ECR configuration..."
+
+          # Check if AWS_ROLE_TO_ASSUME is set and not empty
+          HAS_OIDC_ROLE=false
+          if [ -n "$AWS_ROLE" ]; then
+            echo "✓ AWS_ROLE_TO_ASSUME variable is set (OIDC authentication)"
+            HAS_OIDC_ROLE=true
+          else
+            echo "ℹ AWS_ROLE_TO_ASSUME variable is not set"
+          fi
+
+          # Check if AWS access keys are set
+          HAS_ACCESS_KEYS=false
+          if [ -n "$AWS_ACCESS_KEY" ] && [ -n "$AWS_SECRET_KEY" ]; then
+            echo "✓ AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY secrets are set (Access Key authentication)"
+            HAS_ACCESS_KEYS=true
+          else
+            echo "ℹ AWS Access Key secrets are not fully configured"
+          fi
+
+          # Ensure at least one authentication method is configured
+          if [ "$HAS_OIDC_ROLE" = false ] && [ "$HAS_ACCESS_KEYS" = false ]; then
+            echo "❌ ERROR: No AWS authentication method configured!"
+            echo "Please configure either:"
+            echo "  1. OIDC: Set the AWS_ROLE_TO_ASSUME repository variable, OR"
+            echo "  2. Access Keys: Set both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY secrets"
+            exit 1
+          fi
+
+          # Validate ECR_REGISTRY format (should match *.dkr.ecr.*.amazonaws.com)
+          if [ -z "$ECR_REG" ]; then
+            echo "❌ ERROR: ECR_REGISTRY secret is not set or is empty!"
+            echo "Please set the ECR_REGISTRY secret (format: 123456789012.dkr.ecr.us-east-1.amazonaws.com)"
+            exit 1
+          fi
+
+          # Validate ECR_REGISTRY format without exposing the actual value
+          if ! echo "$ECR_REG" | grep -qE '^[0-9]+\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$'; then
+            echo "❌ ERROR: ECR_REGISTRY format is invalid!"
+            echo "Expected format: <account-id>.dkr.ecr.<region>.amazonaws.com"
+            echo "Example: 123456789012.dkr.ecr.us-east-1.amazonaws.com"
+            exit 1
+          fi
+          echo "✓ ECR_REGISTRY format is valid"
+
+          # Validate ECR_REPOSITORY is set
+          if [ -z "$ECR_REPO" ]; then
+            echo "❌ ERROR: ECR_REPOSITORY secret is not set or is empty!"
+            echo "Please set the ECR_REPOSITORY secret (e.g., trading-quant-sim)"
+            exit 1
+          fi
+          echo "✓ ECR_REPOSITORY is set"
+
+          echo ""
+          echo "✅ All validations passed successfully!"
+
       # Recommended: use OIDC role assumption instead of long-lived AWS keys
       - name: Configure AWS credentials (OIDC)
-        if: vars.AWS_ROLE_TO_ASSUME != ''
+        if: vars.AWS_ROLE_TO_ASSUME != '' && vars.AWS_ROLE_TO_ASSUME != null
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
@@ -38,7 +103,7 @@ jobs:
 
       # Fallback: use traditional AWS access key authentication
       - name: Configure AWS credentials (Access Keys)
-        if: vars.AWS_ROLE_TO_ASSUME == ''
+        if: vars.AWS_ROLE_TO_ASSUME == '' || vars.AWS_ROLE_TO_ASSUME == null
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
